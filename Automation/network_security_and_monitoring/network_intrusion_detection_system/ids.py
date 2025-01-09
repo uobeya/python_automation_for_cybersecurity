@@ -1,54 +1,64 @@
-from scapy.all import sniff, TCP, IP
-from collections import Counter
-import time
+import os
+import joblib
+import pandas as pd
+from scapy.all import sniff, IP, TCP, UDP, Raw
 
-# Initialize counters and thresholds
-connection_attempts = Counter()
-THRESHOLD = 9  # Max allowed connection attempts per IP in a minute
+# Load pre-trained machine learning model (Random Forest in this case)
+MODEL_PATH = "/home/udeh/Desktop/python_automation_for_cybersecurity/Automation/network_security_and_monitoring/network_intrusion_detection_system/network_anomaly_model.pkl"
 
+if not os.path.exists(MODEL_PATH):
+    print(f"Model not found at {MODEL_PATH}. Train and save the model first.")
+    exit()
+
+model = joblib.load(MODEL_PATH)
+
+# Feature extraction from packets
+def extract_features(packet):
+    """
+    Extracts relevant features from a network packet.
+    """
+    features = {
+        "src_ip": packet[IP].src if packet.haslayer(IP) else "0.0.0.0",
+        "dst_ip": packet[IP].dst if packet.haslayer(IP) else "0.0.0.0",
+        "src_port": packet[TCP].sport if packet.haslayer(TCP) else (packet[UDP].sport if packet.haslayer(UDP) else 0),
+        "dst_port": packet[TCP].dport if packet.haslayer(TCP) else (packet[UDP].dport if packet.haslayer(UDP) else 0),
+        "packet_size": len(packet),
+        "is_tcp": 1 if packet.haslayer(TCP) else 0,
+        "is_udp": 1 if packet.haslayer(UDP) else 0,
+        "is_raw": 1 if packet.haslayer(Raw) else 0,
+    }
+    return features
+
+# Analyze packet using the ML model
 def analyze_packet(packet):
     """
-    Analyzes a captured packet for suspicious activity.
+    Analyzes a network packet for anomalies using a machine learning model.
     """
-    if packet.haslayer(IP):
-        src_ip = packet[IP].src
-        dst_ip = packet[IP].dst
-        if packet.haslayer(TCP):
-            src_port = packet[TCP].sport
-            dst_port = packet[TCP].dport
-            
-            # Log the packet
-            print(f"Packet: {src_ip}:{src_port} -> {dst_ip}:{dst_port}")
+    features = extract_features(packet)
+    feature_df = pd.DataFrame([features])
+    feature_df.drop(columns=["src_ip", "dst_ip"], inplace=True)  # Drop non-numeric columns for the model
+    
+    prediction = model.predict(feature_df)
+    if prediction == 1:  # Assume '1' indicates an anomaly
+        print(f"[ALERT] Anomalous traffic detected: {features}")
+    else:
+        print(f"[INFO] Normal traffic: {features}")
 
-            # Detect port scan (frequent connection attempts)
-            connection_attempts[(src_ip, dst_ip)] += 1
-            if connection_attempts[(src_ip, dst_ip)] > THRESHOLD:
-                print(f"[ALERT] Potential port scan detected from {src_ip} to {dst_ip}!")
-
-            # Checking specific suspicious ports, e.g. SSH brute force
-            if dst_port == 22:  # SSH
-                print(f"[INFO] SSH traffic detected from {src_ip} to {dst_ip}")
-
-def monitor_network(interface="eth0", duration=60):
+# Monitor and analyze network traffic
+def monitor_traffic(interface="eth0", duration=60):
     """
-    Monitors network traffic on a specified interface for a duration.
+    Captures and analyzes network traffic for anomalies.
     Args:
-        interface (str): The network interface to monitor.
-        duration : Duration to monitor in seconds.
+        interface (str): Network interface to monitor.
+        duration (int): Duration to monitor in seconds.
     """
-    print(f"Monitoring traffic on {interface} for {duration} seconds...")
-    start_time = time.time()
-
-    def stop_condition(packet):
-        # Stop after the duration given
-        return time.time() - start_time > duration
-
-    sniff(iface=interface, prn=analyze_packet, stop_filter=stop_condition)
+    print(f"Monitoring network traffic on {interface} for {duration} seconds...")
+    sniff(iface=interface, prn=analyze_packet, timeout=duration)
     print("Monitoring complete.")
 
 if __name__ == "__main__":
-    # Specify the network interface and monitoring duration
-    network_interface = input("Enter the network interface (e.g., eth0): ") or "eth0"
+    # User inputs for network interface and monitoring duration
+    network_interface = input("Enter the network interface (e.g., eth0, wlan0): ") or "eth0"
     monitoring_duration = int(input("Enter the monitoring duration (seconds): ") or 60)
 
-    monitor_network(interface=network_interface, duration=monitoring_duration)
+    monitor_traffic(interface=network_interface, duration=monitoring_duration)
